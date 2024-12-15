@@ -2,227 +2,201 @@ import asyncio
 import websockets
 import json
 
-
 class RockPaperScissorsGame:
     """
-    Класс для управления игрой "Камень-Ножницы-Бумага" между двумя игроками.
+    A class to manage the Rock-Paper-Scissors game between two players.
 
-    Атрибуты:
-        player1_ws (websockets.WebSocketServerProtocol): WebSocket для Игрока 1.
-        player2_ws (websockets.WebSocketServerProtocol): WebSocket для Игрока 2.
-        players (dict): Словарь, связывающий соединения WebSocket с их ходами.
-        game_over (bool): Флаг, указывающий, завершена ли игра.
+    Attributes:
+        player1_ws (websockets.WebSocketServerProtocol): WebSocket for Player 1.
+        player2_ws (websockets.WebSocketServerProtocol): WebSocket for Player 2.
+        players (dict): A dictionary mapping WebSocket connections to their moves.
+        game_over (bool): A flag indicating whether the game has ended.
     """
 
     def __init__(self, player1_ws, player2_ws):
         """
-        Инициализирует игру с двумя соединениями WebSocket для игроков.
+        Initializes the game with two player WebSocket connections.
 
-        Аргументы:
-            player1_ws (websockets.WebSocketServerProtocol): WebSocket для Игрока 1.
-            player2_ws (websockets.WebSocketServerProtocol): WebSocket для Игрока 2.
+        Args:
+            player1_ws (websockets.WebSocketServerProtocol): WebSocket for Player 1.
+            player2_ws (websockets.WebSocketServerProtocol): WebSocket for Player 2.
         """
-        self.players = {
-            player1_ws: None,
-            player2_ws: None,
-        }  # Хранит ходы для каждого игрока
+        self.players = {player1_ws: None, player2_ws: None}
         self.player1_ws = player1_ws
         self.player2_ws = player2_ws
-        self.game_over = False  # Флаг состояния игры
+        self.game_over = False
 
     async def receive_move(self, websocket):
         """
-        Получает ход от игрока.
+        Receives and validates a move from a player.
 
-        Аргументы:
-            websocket (websockets.WebSocketServerProtocol): Соединение WebSocket игрока.
+        Args:
+            websocket (websockets.WebSocketServerProtocol): The WebSocket connection of the player.
 
-        Возвращает:
-            bool: True, если ход действителен и получен, иначе False.
+        Returns:
+            bool: True if the move is valid, otherwise False.
         """
         try:
-            data = await websocket.recv()  # Получает данные от игрока
-            message = json.loads(data)  # Парсит JSON сообщение
-            move = message.get("move")  # Извлекает ход
+            data = await websocket.recv()
+            message = json.loads(data)
+            move = message.get("move")
             if move not in ["rock", "paper", "scissors"]:
-                # Отправляет сообщение об ошибке, если ход недействителен
-                await websocket.send(
-                    json.dumps({"type": "error", "message": "Недопустимый ход"})
-                )
+                await websocket.send(json.dumps({"type": "error", "message": "Invalid move"}))
                 return False
-            self.players[websocket] = move  # Сохраняет ход игрока
+            self.players[websocket] = move
             return True
         except websockets.exceptions.ConnectionClosed:
-            # Обрабатывает случай, когда игрок отключается
-            print("Соединение закрыто")
+            print("Connection closed")
             return False
 
     async def determine_winner(self):
         """
-        Определяет победителя на основе ходов игроков и отправляет результат.
+        Determines the winner based on the players' moves and broadcasts the result.
         """
         move1 = self.players[self.player1_ws]
         move2 = self.players[self.player2_ws]
         result = self.get_result(move1, move2)
-        # Отправляет результат обоим игрокам
-        await self.broadcast(
-            {"type": "result", "move1": move1, "move2": move2, "result": result}
-        )
-        self.game_over = True  # Устанавливает флаг завершения игры
+        await self.broadcast({"type": "result", "move1": move1, "move2": move2, "result": result})
+        self.game_over = True
 
     def get_result(self, move1, move2):
         """
-        Определяет результат игры на основе традиционных правил "Камень-Ножницы-Бумага".
+        Determines the result of the game using traditional Rock-Paper-Scissors rules.
 
-        Аргументы:
-            move1 (str): Ход Игрока 1.
-            move2 (str): Ход Игрока 2.
+        Args:
+            move1 (str): Move of Player 1.
+            move2 (str): Move of Player 2.
 
-        Возвращает:
-            str: 'player1', если побеждает Игрок 1; 'player2', если побеждает Игрок 2; 'draw', если ничья.
+        Returns:
+            str: 'player1' if Player 1 wins, 'player2' if Player 2 wins, 'draw' if it's a tie.
         """
         if move1 == move2:
             return "draw"
-        # Определяет, какой ход побеждает
         wins = {"rock": "scissors", "scissors": "paper", "paper": "rock"}
-        if wins[move1] == move2:
-            return "player1"
-        else:
-            return "player2"
+        return "player1" if wins[move1] == move2 else "player2"
 
     async def broadcast(self, message):
         """
-        Отправляет сообщение обоим игрокам.
+        Sends a message to both players.
 
-        Аргументы:
-            message (dict): Сообщение для отправки.
+        Args:
+            message (dict): The message to broadcast.
         """
         await self.player1_ws.send(json.dumps(message))
         await self.player2_ws.send(json.dumps(message))
 
+    async def ask_for_rematch(self):
+        """
+        Prompts both players to decide if they want a rematch.
+
+        If both players agree, the game state is reset and a new game begins.
+        Otherwise, the game ends.
+        """
+        await self.broadcast({"type": "rematch"})
+        responses = await asyncio.gather(
+            self.receive_response(self.player1_ws),
+            self.receive_response(self.player2_ws),
+        )
+        if all(responses):
+            self.reset_game()
+            await start_game(self)
+        else:
+            await self.broadcast({"type": "end", "message": "Game over."})
+
+    async def receive_response(self, websocket):
+        """
+        Receives a response from a player about the rematch request.
+
+        Args:
+            websocket (websockets.WebSocketServerProtocol): The WebSocket connection of the player.
+
+        Returns:
+            bool: True if the player agrees to a rematch, otherwise False.
+        """
+        try:
+            data = await websocket.recv()
+            message = json.loads(data)
+            return message.get("rematch") == "yes"
+        except websockets.exceptions.ConnectionClosed:
+            return False
+
+    def reset_game(self):
+        """
+        Resets the game state for a new round.
+        """
+        self.players = {self.player1_ws: None, self.player2_ws: None}
+        self.game_over = False
 
 async def handler(websocket):
     """
-    Обрабатывает входящие WebSocket соединения.
+    Handles incoming WebSocket connections and assigns players to games.
 
-    Аргументы:
-        websocket (websockets.WebSocketServerProtocol): Соединение WebSocket игрока.
+    Args:
+        websocket (websockets.WebSocketServerProtocol): The incoming WebSocket connection.
     """
-    print("Новое соединение")
+    print("New connection")
     try:
-        # Если есть игрок, ожидающий соперника, начинается новая игра
         if waiting_players:
             opponent_ws = waiting_players.pop(0)
             game = RockPaperScissorsGame(opponent_ws, websocket)
             await start_game(game)
         else:
-            # В противном случае добавляем этого игрока в список ожидания
             waiting_players.append(websocket)
-            await websocket.send(
-                json.dumps({"type": "waiting", "message": "Ожидание соперника..."})
-            )
-            # Поддерживаем соединение открытым во время ожидания
+            await websocket.send(json.dumps({"type": "waiting", "message": "Waiting for an opponent..."}))
             await websocket.wait_closed()
     except websockets.exceptions.ConnectionClosed:
-        # Обрабатывает отключение
-        print("Соединение закрыто")
+        print("Connection closed")
     finally:
-        # Очистка, если игрок отключился
         if websocket in waiting_players:
             waiting_players.remove(websocket)
 
-
 async def start_game(game):
     """
-    Отправляет сообщения о начале игры обоим игрокам и запускает игровой цикл.
+    Sends game start messages to both players and begins the game loop.
 
-    Аргументы:
-        game (RockPaperScissorsGame): Экземпляр игры.
+    Args:
+        game (RockPaperScissorsGame): The game instance.
     """
-    # Уведомляет игроков, что игра началась
-    await game.player1_ws.send(
-        json.dumps(
-            {
-                "type": "start",
-                "player": "player1",
-                "message": "Игра началась. Вы - Игрок 1",
-            }
-        )
-    )
-    await game.player2_ws.send(
-        json.dumps(
-            {
-                "type": "start",
-                "player": "player2",
-                "message": "Игра началась. Вы - Игрок 2",
-            }
-        )
-    )
-    # Запускает игровой цикл
+    await game.player1_ws.send(json.dumps({"type": "start", "player": "player1", "message": "Game started. You are Player 1"}))
+    await game.player2_ws.send(json.dumps({"type": "start", "player": "player2", "message": "Game started. You are Player 2"}))
     await game_loop(game)
-
 
 async def game_loop(game):
     """
-    Основной игровой цикл для обработки ходов и определения победителя.
+    The main game loop for handling moves and determining the winner.
 
-    Аргументы:
-        game (RockPaperScissorsGame): Экземпляр игры.
+    Args:
+        game (RockPaperScissorsGame): The game instance.
     """
     while not game.game_over:
-        # Запрашивает у обоих игроков ввод ходов
-        await game.player1_ws.send(
-            json.dumps(
-                {
-                    "type": "your_move",
-                    "message": "Введите ваш ход (камень, ножницы или бумага):",
-                }
-            )
-        )
-        await game.player2_ws.send(
-            json.dumps(
-                {
-                    "type": "your_move",
-                    "message": "Введите ваш ход (камень, ножницы или бумага):",
-                }
-            )
-        )
+        await game.player1_ws.send(json.dumps({"type": "your_move", "message": "Enter your move (rock, paper, or scissors):"}))
+        await game.player2_ws.send(json.dumps({"type": "your_move", "message": "Enter your move (rock, paper, or scissors):"}))
 
-        # Одновременный приём ходов от обоих игроков
-        receive_moves = [
+        results = await asyncio.gather(
             game.receive_move(game.player1_ws),
             game.receive_move(game.player2_ws),
-        ]
-        results = await asyncio.gather(*receive_moves)
+        )
 
-        # Если любой игрок сделал недопустимый ход или отключился, завершает игру
         if not all(results):
-            await game.broadcast(
-                {
-                    "type": "error",
-                    "message": "Игрок отключился или сделал недопустимый ход.",
-                }
-            )
+            await game.broadcast({"type": "error", "message": "A player disconnected or made an invalid move."})
             break
 
-        # Определяет победителя и отправляет результат
         await game.determine_winner()
-        break  # Завершает игру после одного раунда
+        break
 
+    await game.ask_for_rematch()
 
-# Список для отслеживания игроков, ожидающих соперника
 waiting_players = []
-
 
 async def main():
     """
-    Основная функция для запуска сервера и прослушивания соединений.
+    The main entry point for the WebSocket server.
+
+    Listens for incoming connections and manages game sessions.
     """
     async with websockets.serve(handler, "localhost", 6789):
-        print("Сервер запущен на ws://localhost:6789")
-        await asyncio.Future()  # Поддерживает работу сервера
-
+        print("Server started at ws://localhost:6789")
+        await asyncio.Future()
 
 if __name__ == "__main__":
-    # Запуск сервера
     asyncio.run(main())
